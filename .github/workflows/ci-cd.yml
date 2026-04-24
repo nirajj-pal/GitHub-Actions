@@ -49,6 +49,20 @@ jobs:
         run: |
           docker build -t "$FULL_IMAGE" "$APP_DIR"
 
+      - name: Run Trivy image scan
+        run: |
+          mkdir -p "$HOME/.cache/trivy"
+
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$HOME/.cache/trivy:/root/.cache/" \
+            aquasec/trivy:0.70.0 image \
+            --exit-code 1 \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --no-progress \
+            "$FULL_IMAGE"
+
       - name: Push Docker image
         run: |
           docker push "$FULL_IMAGE"
@@ -137,14 +151,14 @@ jobs:
           GITOPS_PAT: ${{ secrets.GITOPS_PAT }}
         run: |
           cd gitops
-      
+
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
-      
+
           git add "${MANIFEST_PATH}/${KUSTOMIZATION_FILE}"
-      
+
           git commit -m "Update Docker image tag to ${IMAGE_TAG}" || echo "No changes to commit"
-      
+
           git remote set-url origin "https://x-access-token:${GITOPS_PAT}@github.com/${MANIFEST_REPO}.git"
-      
+
           git push origin "${MANIFEST_BRANCH}"
