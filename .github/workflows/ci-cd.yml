@@ -1,0 +1,114 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "kubernetes-cicd-tutorial-main/**"
+      - ".github/workflows/ci-cd.yml"
+
+  workflow_dispatch:
+
+env:
+  APP_DIR: kubernetes-cicd-tutorial-main
+
+  # Image details
+  IMAGE_NAME: harbor.lr.in/project-lr/ordermutationmsapi
+
+  # Manifest repo details
+  MANIFEST_REPO: nirajj-pal/sample-node-app-manifests
+  MANIFEST_BRANCH: main
+  MANIFEST_PATH: manifest-repo/kubernetes-manifest-main/cmsapi/dev
+  KUSTOMIZATION_FILE: kustomization.yaml
+
+jobs:
+  build-and-push:
+    runs-on: [self-hosted, linux, x64, docker-build]
+
+    steps:
+      - name: Checkout application repo
+        uses: actions/checkout@v4
+
+      - name: Generate image tag
+        run: |
+          IMAGE_TAG=${GITHUB_SHA::8}
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+          echo "FULL_IMAGE=${IMAGE_NAME}:$IMAGE_TAG" >> $GITHUB_ENV
+
+      - name: Login to Harbor Registry
+        run: |
+          echo "${{ secrets.HARBOR_PASSWORD }}" | docker login harbor.lr.in \
+            -u "${{ secrets.HARBOR_USERNAME }}" \
+            --password-stdin
+
+      - name: Build Docker image
+        run: |
+          docker build -t "$FULL_IMAGE" "$APP_DIR"
+
+      - name: Push Docker image
+        run: |
+          docker push "$FULL_IMAGE"
+
+      - name: Checkout manifest repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.MANIFEST_REPO }}
+          ref: ${{ env.MANIFEST_BRANCH }}
+          token: ${{ secrets.GITOPS_PAT }}
+          path: gitops
+
+      - name: Update kustomization image tag
+        run: |
+          cd "gitops/${MANIFEST_PATH}"
+
+          echo "Before update:"
+          cat "${KUSTOMIZATION_FILE}"
+
+          python3 - <<EOF
+          from pathlib import Path
+
+          file = Path("${KUSTOMIZATION_FILE}")
+          content = file.read_text()
+
+          old_image = "${IMAGE_NAME}"
+          new_tag = "${IMAGE_TAG}"
+
+          lines = content.splitlines()
+          output = []
+          inside_target_image = False
+
+          for line in lines:
+              stripped = line.strip()
+
+              if stripped == f"- name: {old_image}":
+                  inside_target_image = True
+                  output.append(line)
+                  continue
+
+              if inside_target_image and stripped.startswith("newTag:"):
+                  indent = line[:len(line) - len(line.lstrip())]
+                  output.append(f"{indent}newTag: {new_tag}")
+                  inside_target_image = False
+                  continue
+
+              output.append(line)
+
+          file.write_text("\\n".join(output) + "\\n")
+          EOF
+
+          echo "After update:"
+          cat "${KUSTOMIZATION_FILE}"
+
+      - name: Commit and push manifest changes
+        run: |
+          cd gitops
+
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+
+          git add "${MANIFEST_PATH}/${KUSTOMIZATION_FILE}"
+
+          git commit -m "Update ord_mutation image tag to ${IMAGE_TAG}" || echo "No changes to commit"
+
+          git push origin "${MANIFEST_BRANCH}"
