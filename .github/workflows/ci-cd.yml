@@ -133,14 +133,18 @@ jobs:
           cat "${KUSTOMIZATION_FILE}"
 
       - name: Commit and push manifest changes
+        env:
+          GITOPS_PAT: ${{ secrets.GITOPS_PAT }}
         run: |
           cd gitops
-
+      
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
-
+      
           git add "${MANIFEST_PATH}/${KUSTOMIZATION_FILE}"
-
+      
           git commit -m "Update Docker image tag to ${IMAGE_TAG}" || echo "No changes to commit"
-
+      
+          git remote set-url origin "https://x-access-token:${GITOPS_PAT}@github.com/${MANIFEST_REPO}.git"
+      
           git push origin "${MANIFEST_BRANCH}"
