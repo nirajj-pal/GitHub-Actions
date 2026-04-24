@@ -13,14 +13,17 @@ on:
 env:
   APP_DIR: kubernetes-cicd-tutorial-main
 
-  # Image details
-  IMAGE_NAME: harbor.lr.in/project-lr/ordermutationmsapi
+  # Docker Hub image
+  DOCKER_IMAGE_NAME: docker.io/nirajpal/sample-node-app
 
-  # Manifest repo details
+  # Manifest repo
   MANIFEST_REPO: nirajj-pal/sample-node-app-manifests
   MANIFEST_BRANCH: main
   MANIFEST_PATH: manifest-repo/kubernetes-manifest-main/cmsapi/dev
   KUSTOMIZATION_FILE: kustomization.yaml
+
+  # Current image name present in kustomization.yaml
+  OLD_IMAGE_NAME: harbor.lr.in/project-lr/ordermutationmsapi
 
 jobs:
   build-and-push:
@@ -34,12 +37,12 @@ jobs:
         run: |
           IMAGE_TAG=${GITHUB_SHA::8}
           echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
-          echo "FULL_IMAGE=${IMAGE_NAME}:$IMAGE_TAG" >> $GITHUB_ENV
+          echo "FULL_IMAGE=${DOCKER_IMAGE_NAME}:$IMAGE_TAG" >> $GITHUB_ENV
 
-      - name: Login to Harbor Registry
+      - name: Login to Docker Hub
         run: |
-          echo "${{ secrets.HARBOR_PASSWORD }}" | docker login harbor.lr.in \
-            -u "${{ secrets.HARBOR_USERNAME }}" \
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login docker.io \
+            -u "${{ secrets.DOCKERHUB_USERNAME }}" \
             --password-stdin
 
       - name: Build Docker image
@@ -58,7 +61,7 @@ jobs:
           token: ${{ secrets.GITOPS_PAT }}
           path: gitops
 
-      - name: Update kustomization image tag
+      - name: Update kustomization.yaml image
         run: |
           cd "gitops/${MANIFEST_PATH}"
 
@@ -69,30 +72,59 @@ jobs:
           from pathlib import Path
 
           file = Path("${KUSTOMIZATION_FILE}")
-          content = file.read_text()
+          content = file.read_text().splitlines()
 
-          old_image = "${IMAGE_NAME}"
+          old_image = "${OLD_IMAGE_NAME}"
+          new_image = "${DOCKER_IMAGE_NAME}"
           new_tag = "${IMAGE_TAG}"
 
-          lines = content.splitlines()
           output = []
-          inside_target_image = False
+          inside_image_block = False
+          image_found = False
+          new_name_written = False
+          new_tag_written = False
 
-          for line in lines:
+          for line in content:
               stripped = line.strip()
 
               if stripped == f"- name: {old_image}":
-                  inside_target_image = True
+                  inside_image_block = True
+                  image_found = True
+                  new_name_written = False
+                  new_tag_written = False
                   output.append(line)
                   continue
 
-              if inside_target_image and stripped.startswith("newTag:"):
-                  indent = line[:len(line) - len(line.lstrip())]
-                  output.append(f"{indent}newTag: {new_tag}")
-                  inside_target_image = False
-                  continue
+              if inside_image_block:
+                  if stripped.startswith("- name:"):
+                      if not new_name_written:
+                          output.append("    newName: " + new_image)
+                      if not new_tag_written:
+                          output.append("    newTag: " + new_tag)
+                      inside_image_block = False
+
+                  elif stripped.startswith("newName:"):
+                      indent = line[:len(line) - len(line.lstrip())]
+                      output.append(f"{indent}newName: {new_image}")
+                      new_name_written = True
+                      continue
+
+                  elif stripped.startswith("newTag:"):
+                      indent = line[:len(line) - len(line.lstrip())]
+                      output.append(f"{indent}newTag: {new_tag}")
+                      new_tag_written = True
+                      continue
 
               output.append(line)
+
+          if inside_image_block:
+              if not new_name_written:
+                  output.append("    newName: " + new_image)
+              if not new_tag_written:
+                  output.append("    newTag: " + new_tag)
+
+          if not image_found:
+              raise SystemExit(f"Image name not found in kustomization.yaml: {old_image}")
 
           file.write_text("\\n".join(output) + "\\n")
           EOF
@@ -109,6 +141,6 @@ jobs:
 
           git add "${MANIFEST_PATH}/${KUSTOMIZATION_FILE}"
 
-          git commit -m "Update ord_mutation image tag to ${IMAGE_TAG}" || echo "No changes to commit"
+          git commit -m "Update Docker image tag to ${IMAGE_TAG}" || echo "No changes to commit"
 
           git push origin "${MANIFEST_BRANCH}"
